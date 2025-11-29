@@ -1,0 +1,30 @@
+[
+    {
+        "id": 4,
+        "name": "Swapnil",
+        "date": "2025-11-04",
+        "note": "",
+        "half_day": false
+    },
+    {
+        "id": 5,
+        "name": "Prem",
+        "date": "2025-11-04",
+        "note": "Traveling",
+        "half_day": false
+    },
+    {
+        "id": 6,
+        "name": "Smriti",
+        "date": "2025-11-05",
+        "note": "",
+        "half_day": false
+    },
+    {
+        "id": 7,
+        "name": "Diksha",
+        "date": "2025-11-12",
+        "note": "Function",
+        "half_day": false
+    }
+]
