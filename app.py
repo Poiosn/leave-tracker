@@ -9,12 +9,14 @@ from collections import OrderedDict
 from flask import Flask, request, redirect, session, render_template_string, url_for
 from flask_sqlalchemy import SQLAlchemy
 
-# -------------------- Config --------------------
+# -------------------- App Config --------------------
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET", "secret123")  # change in production
-DATABASE_URL = os.getenv("DATABASE_URL")  # Render environment variable
+app.secret_key = os.getenv("FLASK_SECRET", "secret123")  # change for production
+
+# Use DATABASE_URL from environment (Render provides this)
+DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    # fallback to local sqlite for local dev if DATABASE_URL not provided
+    # fallback to sqlite for local dev convenience
     DATABASE_URL = "sqlite:///local_db.sqlite3"
 
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
@@ -22,13 +24,12 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-# simple fixed password login (Option A)
+# simple static password login (Option A)
 PASSWORD = "1234"
 
-# local JSON filenames (used only for initial import if present)
+# filenames (used only for initial import if present)
 LEAVE_FILE = "leaves.json"
 EMP_FILE = "employees.json"
-
 
 # -------------------- Models --------------------
 class EmployeeColor(db.Model):
@@ -41,7 +42,7 @@ class EmployeeColor(db.Model):
 class Leave(db.Model):
     __tablename__ = "leaves"
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(200), nullable=False)
+    name = db.Column(db.String(200), nullable=False, index=True)
     date = db.Column(db.Date, nullable=False, index=True)
     note = db.Column(db.String(500), nullable=True)
     half_day = db.Column(db.Boolean, nullable=False, default=False)
@@ -49,17 +50,17 @@ class Leave(db.Model):
 
 # -------------------- Helpers --------------------
 def generate_color():
-    """Return a light pastel rgba color with slight transparency."""
+    """Generate a soft pastel rgba color."""
     r = random.randint(120, 230)
     g = random.randint(120, 230)
     b = random.randint(120, 230)
-    return f"rgba({r},{g},{b},0.45)"
+    return f"rgba({r},{g},{b},0.35)"
 
 
 def get_color_for_employee(name):
-    """Get or create saved color for employee (DB-backed)."""
+    """Get saved color or create a new one for an employee."""
     if not name:
-        return "rgba(200,200,200,0.35)"
+        return "rgba(200,200,200,0.25)"
     emp = EmployeeColor.query.filter_by(name=name).first()
     if emp:
         return emp.color
@@ -71,15 +72,14 @@ def get_color_for_employee(name):
 
 
 def build_calendar(year, month, leaves):
-    """Return weeks matrix for the month with leave names per day (list)."""
+    """Return month grid: list of weeks, each week list of {day, names}."""
     cal = calendar.Calendar(firstweekday=0)
     month_days = cal.monthdayscalendar(year, month)
 
     leave_map = {}
     for lv in leaves:
         iso = lv.date.isoformat()
-        label = lv.name + (" (Half)" if lv.half_day else "")
-        leave_map.setdefault(iso, []).append(label)
+        leave_map.setdefault(iso, []).append(lv.name + (" (Half)" if lv.half_day else ""))
 
     out = []
     for week in month_days:
@@ -96,15 +96,14 @@ def build_calendar(year, month, leaves):
 
 def import_json_to_db():
     """
-    If the DB is empty (no leaves), try to import from local JSON files.
-    This helps preserve your existing data when switching from json -> db.
+    Import local JSON files (if present) into DB the first time (only if DB empty).
+    This preserves your existing JSON data when migrating.
     """
-    # Only import if tables are empty
-    leaves_count = Leave.query.count()
-    if leaves_count > 0:
+    # Only import if no leaves exist
+    if Leave.query.count() > 0:
         return
 
-    # Import employees first
+    # Import employees
     if os.path.exists(EMP_FILE):
         try:
             with open(EMP_FILE, "r") as f:
@@ -122,19 +121,17 @@ def import_json_to_db():
             with open(LEAVE_FILE, "r") as f:
                 leaves = json.load(f)
             for lv in leaves:
-                # expect fields: id, name, date (iso), note, half_day
                 try:
                     d = datetime.fromisoformat(lv["date"]).date()
                 except Exception:
                     continue
-                # avoid duplicates by checking identical record (name+date+note)
                 exists = Leave.query.filter_by(name=lv["name"], date=d, note=lv.get("note", "")).first()
                 if not exists:
                     leave = Leave(
                         name=lv["name"],
                         date=d,
                         note=lv.get("note", ""),
-                        half_day=bool(lv.get("half_day", False))
+                        half_day=bool(lv.get("half_day", False)),
                     )
                     db.session.add(leave)
             db.session.commit()
@@ -159,35 +156,44 @@ def require_auth(func):
 @app.route("/", methods=["GET", "POST"])
 def login():
     html = """
-    <html><head>
+    <!doctype html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <title>Login — Leave Tracker</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>
-        body { background:#dde7ff; padding:40px; font-family:Arial; }
-        .card {
-            width:350px; margin:auto; padding:30px;
-            background:rgba(255,255,255,0.5);
-            backdrop-filter:blur(8px);
-            border-radius:16px;
-            box-shadow:0 8px 30px rgba(0,0,0,0.15);
-            text-align:center;
-        }
-        input,button {
-            width:100%; padding:12px; margin-top:12px;
-            border-radius:8px; border:1px solid #ccc;
-            font-size:15px;
-        }
-        button { background:#2563eb; color:white; font-weight:600; }
+    :root{
+      --accent:#3446f1;
+      --card: rgba(255,255,255,0.85);
+      --glass: rgba(255,255,255,0.12);
+      --muted:#6b7280;
+      --bg: linear-gradient(135deg,#eef2ff 0%, #f8fbff 100%);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,Arial;background:var(--bg);height:100vh;display:flex;align-items:center;justify-content:center}
+    .wrap{width:420px;padding:36px;border-radius:16px;background:var(--card);box-shadow:0 10px 30px rgba(16,24,40,0.12);backdrop-filter:blur(6px);text-align:center}
+    h1{margin:0 0 10px;font-size:22px;color:#0f172a}
+    p.sub{color:var(--muted);margin:0 0 20px}
+    input[type="password"]{width:100%;padding:12px;border-radius:10px;border:1px solid #e6edf8;font-size:14px}
+    button{width:100%;padding:12px;background:var(--accent);color:white;border:none;border-radius:10px;margin-top:14px;font-weight:700;cursor:pointer;box-shadow:0 6px 18px rgba(52,70,241,0.18)}
+    small.msg{display:block;margin-top:12px;color:#ef4444}
+    footer{font-size:12px;color:var(--muted);margin-top:16px}
     </style>
     </head>
     <body>
-        <div class="card">
-            <h2>Leave Tracker Login</h2>
-            <form method="POST">
-                <input type="password" name="password" placeholder="Enter password" autocomplete="off">
-                <button>Login</button>
-            </form>
-            <p style="color:red">{{msg}}</p>
-        </div>
-    </body></html>
+     <div class="wrap">
+       <h1>Leave Tracker</h1>
+       <p class="sub">Simple team leave calendar — enter password to continue</p>
+       <form method="POST">
+         <input autocomplete="off" name="password" type="password" placeholder="Password">
+         <button>Sign in</button>
+       </form>
+       <small class="msg">{{ msg }}</small>
+       <footer>Built with ♥ — safe for small teams</footer>
+     </div>
+    </body>
+    </html>
     """
     msg = ""
     if request.method == "POST":
@@ -201,330 +207,198 @@ def login():
 @app.route("/dashboard")
 @require_auth
 def dashboard():
-    # fetch employees & leaves
     employees = [e.name for e in EmployeeColor.query.order_by(EmployeeColor.name).all()]
     leaves = Leave.query.order_by(Leave.date).all()
 
     year = int(request.args.get("year", datetime.today().year))
     month = int(request.args.get("month", datetime.today().month))
 
-    # only leaves in this month for the calendar
     month_leaves = [l for l in leaves if l.date.year == year and l.date.month == month]
     weeks = build_calendar(year, month, month_leaves)
 
-    # group leaves date-wise preserving order
     grouped = OrderedDict()
     for lv in leaves:
         key = lv.date.isoformat()
         grouped.setdefault(key, []).append(lv)
 
-    # Render the same enhanced UI (single file)
-    html = """<!DOCTYPE html>
-<html>
-<head>
-<title>Leave Dashboard</title>
-<style>
-body { background:#e3eaff; margin:0; font-family:'Segoe UI', Arial; }
-
-.topbar {
-    background:#2d4cd3;   
-    padding:22px;
-    text-align:center;
-    color:white;
-    font-size:26px;
-    font-weight:700;
-    letter-spacing:1px;
-    position:relative;
-    box-shadow:0 3px 15px rgba(0,0,0,0.2);
-}
-
-.logout-btn {
-    position:absolute;
-    right:25px;
-    top:18px;
-    background:white;
-    color:#2d4cd3;
-    padding:8px 18px;
-    font-weight:600;
-    border-radius:25px;
-    border:none;
-    cursor:pointer;
-    transition:0.25s;
-    box-shadow:0 2px 8px rgba(0,0,0,0.2);
-}
-.logout-btn:hover {
-    background:#eef2ff;
-    transform:scale(1.07);
-}
-
-.container { width:90%; max-width:1300px; margin:30px auto; }
-
-.card {
-    background:rgba(255,255,255,0.65);
-    backdrop-filter:blur(12px);
-    padding:25px; margin-top:25px;
-    border-radius:20px;
-    box-shadow:0 8px 25px rgba(0,0,0,0.15);
-}
-
-/* Calendar */
-.calendar-card {
-    background:rgba(255,255,255,0.7);
-    padding:25px;
-    border-radius:20px;
-    box-shadow:0 8px 25px rgba(0,0,0,0.1);
-}
-
-table { width:100%; border-collapse:separate; border-spacing:0; }
-th {
-    background:#b9ccff;
-    padding:12px; border-radius:12px 12px 0 0;
-}
-td {
-    background:rgba(255,255,255,0.9);
-    height:110px; padding:10px;
-    border:1px solid #e5e7eb;
-    border-radius:14px; cursor:pointer;
-    transition:0.2s;
-    text-align:center;
-    vertical-align:top;
-}
-td:hover {
-    background:#e8ecff;
-    transform:scale(1.03);
-}
-
-.leave-tag {
-    padding:3px 6px;
-    margin-top:4px;
-    border-radius:8px; font-size:12px;
-    display:inline-block;
-}
-
-/* Date Block */
-.date-block {
-    background:rgba(255,255,255,0.55);
-    padding:20px;
-    border-radius:16px;
-    margin-bottom:25px;
-    box-shadow:0 4px 18px rgba(0,0,0,0.12);
-}
-
-.date-title {
-    font-size:20px; font-weight:700;
-    margin-bottom:15px; display:flex; align-items:center;
-}
-.date-title span {
-    font-size:24px; margin-right:8px; color:#2563eb;
-}
-
-.leave-row {
-    display:flex; align-items:center; justify-content:space-between;
-    background:rgba(255,255,255,0.9);
-    padding:12px 14px;
-    margin-bottom:10px;
-    border-radius:12px;
-    box-shadow:0 2px 10px rgba(0,0,0,0.08);
-}
-
-.leave-info-line { margin-left:10px; font-size:16px; flex-grow:1; }
-
-.leave-dot { width:16px; height:16px; border-radius:50%; display:inline-block; }
-
-.delete-btn-small {
-    background:#ef4444; color:white;
-    padding:6px 12px; border:none;
-    border-radius:6px; cursor:pointer;
-    font-weight:600;
-    transition:0.2s;
-}
-.delete-btn-small:hover {
-    transform:scale(1.05);
-}
-
-/* MODAL */
-.modal-bg {
-    position:fixed; top:0; left:0;
-    width:100%; height:100%; display:none;
-    background:rgba(0,0,0,0.45);
-    justify-content:center; align-items:center;
-    backdrop-filter:blur(4px);
-}
-
-.modal {
-    background:rgba(255,255,255,0.97);
-    padding:25px 30px; width:360px;
-    border-radius:22px;
-    box-shadow:0 8px 25px rgba(0,0,0,0.25);
-}
-
-.input-box {
-    width:100%; padding:12px;
-    border-radius:10px; border:1px solid #d1d5db;
-    margin-top:8px;
-}
-
-.modal-btn {
-    width:100%; padding:12px;
-    border:none; border-radius:10px;
-    background:#2563eb; color:white;
-    margin-top:18px; font-weight:600;
-}
-
-.modal-close-btn {
-    width:100%; padding:10px; margin-top:10px;
-    border:none; border-radius:10px;
-    background:#e5e7eb; font-weight:600;
-}
-</style>
-
-<script>
-function openModal(day){
-    let y={{year}}, m={{month}};
-    let dateStr = y + "-" + String(m).padStart(2,'0') + "-" + String(day).padStart(2,'0');
-    document.getElementById("from_date").value = dateStr;
-    document.getElementById("to_date").value = dateStr;
-    document.getElementById("displayDate").innerText = dateStr;
-    document.getElementById("modal").style.display = "flex";
-}
-
-function closeModal(){
-    document.getElementById("modal").style.display = "none";
-}
-
-function checkRange(){
-    let f = document.getElementById("from_date").value;
-    let t = document.getElementById("to_date").value;
-    document.getElementById("half_row").style.display = (f===t) ? "block" : "none";
-}
-</script>
-</head>
-
-<body>
-
-<div class="topbar">
-    Leave Dashboard
-    <form action="{{ url_for('logout') }}" method="GET" style="display:inline;">
-        <button class="logout-btn">Logout</button>
-    </form>
-</div>
-
-<div class="container">
-
-    <!-- Calendar -->
-    <div class="calendar-card">
-        <form method="GET">
-            Year: <input name="year" value="{{year}}" style="width:80px;">
-            Month: <input name="month" value="{{month}}" style="width:80px;">
-            <button>Go</button>
+    # Modernized dashboard UI
+    html = """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Leave Dashboard</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      <style>
+      :root{
+        --bg1: linear-gradient(135deg,#f6f9ff 0,#eef6ff 100%);
+        --accent: #2b4bf0;
+        --muted: #6b7280;
+        --glass: rgba(255,255,255,0.7);
+      }
+      body{margin:0;font-family:Inter,system-ui,Arial;background:var(--bg1);color:#0f172a}
+      .topbar{background:linear-gradient(90deg,#2b4bf0 0%, #4a6fff 120%);padding:20px 24px;display:flex;align-items:center;justify-content:center;position:relative;color:white;box-shadow:0 6px 24px rgba(43,75,240,0.18)}
+      .title{font-size:22px;font-weight:800;letter-spacing:0.3px}
+      .logout-btn{position:absolute;right:20px;top:12px;background:white;color:var(--accent);border:none;padding:8px 14px;border-radius:999px;font-weight:700;cursor:pointer;box-shadow:0 6px 18px rgba(43,75,240,0.18)}
+      .container{max-width:1200px;margin:28px auto;padding:0 18px}
+      .grid{display:grid;grid-template-columns:1fr 430px;gap:22px}
+      .card{background:var(--glass);padding:18px;border-radius:14px;box-shadow:0 8px 30px rgba(2,6,23,0.06)}
+      .calendar-table{width:100%;border-collapse:separate;border-spacing:8px 8px}
+      .calendar-table th{padding:10px;color:var(--muted);font-weight:700;text-align:center}
+      .calendar-table td{background:white;padding:12px;border-radius:10px;min-height:84px;text-align:center;vertical-align:top;cursor:pointer;transition:transform .13s,box-shadow .13s}
+      .calendar-table td:hover{transform:translateY(-4px);box-shadow:0 10px 30px rgba(15,23,42,0.06)}
+      .day-num{font-weight:800;font-size:18px;color:#0f172a;margin-bottom:8px}
+      .tag{display:inline-block;padding:6px 8px;border-radius:999px;font-size:13px;margin:3px 3px;box-shadow:inset 0 -2px 0 rgba(0,0,0,0.02)}
+      .side{max-height:720px;overflow:auto}
+      .date-block{margin-bottom:14px;padding:12px;border-radius:12px;background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(250,250,252,0.98));box-shadow:0 6px 18px rgba(12,18,30,0.04)}
+      .date-title{font-weight:800;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+      .leave-row{display:flex;align-items:center;justify-content:space-between;padding:10px;border-radius:10px;margin-bottom:8px}
+      .leave-left{display:flex;align-items:center;gap:12px}
+      .dot{width:14px;height:14px;border-radius:50%}
+      .info{font-weight:700}
+      .note{color:var(--muted);font-weight:500;font-size:13px;margin-left:6px}
+      .del-btn{background:#ff5c5c;border:none;color:white;padding:8px 10px;border-radius:8px;cursor:pointer}
+      .controls{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+      .input{padding:8px;border-radius:8px;border:1px solid #e9eefb}
+      .modal{position:fixed;left:0;top:0;width:100%;height:100%;display:none;align-items:center;justify-content:center;background:rgba(2,6,23,0.42)}
+      .modal-card{width:420px;background:white;padding:20px;border-radius:14px;box-shadow:0 18px 50px rgba(2,6,23,0.18)}
+      .modal h3{margin:0 0 8px}
+      .btn-primary{background:var(--accent);color:white;padding:10px 14px;border-radius:10px;border:none;cursor:pointer;font-weight:700}
+      .muted{color:var(--muted)}
+      @media(max-width:980px){.grid{grid-template-columns:1fr}}
+      </style>
+    </head>
+    <body>
+      <div class="topbar">
+        <div class="title">Leave Dashboard</div>
+        <form action="{{ url_for('logout') }}" method="GET" style="display:inline">
+          <button class="logout-btn">Logout</button>
         </form>
+      </div>
 
-        <table>
-            <tr>
-                <th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th>
-                <th>Fri</th><th>Sat</th><th>Sun</th>
-            </tr>
-
-            {% for week in weeks %}
-            <tr>
-                {% for d in week %}
-                    {% if d.day == 0 %}
-                        <td></td>
-                    {% else %}
-                        <td onclick="openModal({{d.day}})">
-                            <b style="font-size:18px;">{{d.day}}</b><br>
-                            {% for nm in d.names %}
-                                <span class="leave-tag"
-                                    style="background:{{ get_color_for_employee(nm.split()[0]) }}">
-                                    {{ nm }}
-                                </span>
-                            {% endfor %}
-                        </td>
-                    {% endif %}
-                {% endfor %}
-            </tr>
-            {% endfor %}
-        </table>
-    </div>
-
-    <!-- Day-wise Leaves -->
-    <div class="card">
-        <h3 style="margin-top:0;">All Leaves (Day Wise)</h3>
-
-        {% for d, items in grouped.items() %}
-        <div class="date-block">
-            <div class="date-title"><span>📅</span> {{ d }}</div>
-
-            {% for lv in items %}
-            <div class="leave-row">
-                <span class="leave-dot" style="background:{{ get_color_for_employee(lv.name) }}"></span>
-
-                <div class="leave-info-line">
-                    <b>{{ lv.name }}</b>
-                    {% if lv.half_day %}(Half Day){% endif %}
-                    {% if lv.note %} – {{ lv.note }}{% endif %}
-                </div>
-
-                <form method="POST" action="{{ url_for('delete', id=lv.id) }}">
-                    <button class="delete-btn-small">Delete</button>
-                </form>
+      <div class="container">
+        <div class="grid">
+          <div class="card">
+            <div class="controls">
+              <form method="GET" style="display:flex;gap:8px;align-items:center">
+                <input class="input" name="year" value="{{ year }}" style="width:92px" />
+                <input class="input" name="month" value="{{ month }}" style="width:92px" />
+                <button class="btn-primary">Go</button>
+              </form>
+              <div style="margin-left:auto">
+                <button class="btn-primary" onclick="openModal(null)">Add Leave</button>
+              </div>
             </div>
-            {% endfor %}
-        </div>
-        {% endfor %}
-    </div>
 
-</div>
-
-<!-- Modal -->
-<div class="modal-bg" id="modal">
-    <div class="modal">
-        <h2>Add Leave</h2>
-        <p>Date: <b id="displayDate"></b></p>
-
-        <form method="POST" action="{{ url_for('add') }}">
-
-            <label>From Date</label>
-            <input id="from_date" name="from_date" type="date"
-                   onchange="checkRange()" class="input-box">
-
-            <label>To Date</label>
-            <input id="to_date" name="to_date" type="date"
-                   onchange="checkRange()" class="input-box">
-
-            <label>Employee</label>
-            <select name="name" class="input-box">
-                <option value="">Select</option>
-                {% for nm in employees %}
-                    <option value="{{nm}}">{{nm}}</option>
+            <table class="calendar-table">
+              <tr>
+                <th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th>
+              </tr>
+              {% for week in weeks %}
+              <tr>
+                {% for d in week %}
+                  {% if d.day == 0 %}
+                    <td></td>
+                  {% else %}
+                    <td onclick="openModal({{d.day}})">
+                      <div class="day-num">{{ d.day }}</div>
+                      {% for nm in d.names %}
+                        <div class="tag" style="background:{{ get_color_for_employee(nm.split()[0]) }}">{{ nm }}</div>
+                      {% endfor %}
+                    </td>
+                  {% endif %}
                 {% endfor %}
+              </tr>
+              {% endfor %}
+            </table>
+          </div>
+
+          <div class="card side">
+            <h3 style="margin-top:0">All Leaves (by date)</h3>
+            {% for d, items in grouped.items() %}
+              <div class="date-block">
+                <div class="date-title">📅 {{ d }}</div>
+                {% for lv in items %}
+                <div class="leave-row">
+                  <div class="leave-left">
+                    <div class="dot" style="background:{{ get_color_for_employee(lv.name) }}"></div>
+                    <div>
+                      <div class="info">{{ lv.name }} {% if lv.half_day %}<span class="muted">— Half</span>{% endif %}</div>
+                      {% if lv.note %}<div class="note">{{ lv.note }}</div>{% endif %}
+                    </div>
+                  </div>
+                  <form method="POST" action="{{ url_for('delete', id=lv.id) }}">
+                    <button class="del-btn">Delete</button>
+                  </form>
+                </div>
+                {% endfor %}
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal -->
+      <div id="modal" class="modal">
+        <div class="modal-card">
+          <h3>Add Leave</h3>
+          <form method="POST" action="{{ url_for('add') }}">
+            <label class="muted">From</label>
+            <input id="from_date" name="from_date" class="input" type="date" required>
+
+            <label class="muted">To</label>
+            <input id="to_date" name="to_date" class="input" type="date" required>
+
+            <label class="muted">Employee</label>
+            <select name="name" class="input">
+              <option value="">Select one</option>
+              {% for nm in employees %}
+                <option value="{{ nm }}">{{ nm }}</option>
+              {% endfor %}
             </select>
 
-            <label>Add New Employee</label>
-            <input name="new_name" placeholder="New employee name" class="input-box">
+            <label class="muted">Add New Employee</label>
+            <input name="new_name" class="input" placeholder="New employee name">
 
-            <div id="half_row">
-                <label>Leave Type</label>
-                <select name="half_day" class="input-box">
-                    <option value="no">Full Day</option>
-                    <option value="yes">Half Day</option>
-                </select>
+            <div id="half_row" style="margin-top:8px">
+              <label class="muted">Type</label>
+              <select name="half_day" class="input">
+                <option value="no">Full day</option>
+                <option value="yes">Half day</option>
+              </select>
             </div>
 
-            <label>Note</label>
-            <input name="note" placeholder="Reason/Note" class="input-box">
+            <label class="muted">Note</label>
+            <input name="note" class="input" placeholder="Reason">
 
-            <button class="modal-btn">Add Leave</button>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <button type="submit" class="btn-primary">Save</button>
+              <button type="button" onclick="closeModal()" class="input" style="border-radius:10px">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
 
-        </form>
+      <script>
+        function openModal(day){
+          let y = {{ year }}, m = {{ month }};
+          if(day !== null){
+            let dateStr = y + "-" + String(m).padStart(2,'0') + "-" + String(day).padStart(2,'0');
+            document.getElementById("from_date").value = dateStr;
+            document.getElementById("to_date").value = dateStr;
+          } else {
+            // clear for manual add
+            document.getElementById("from_date").value = "";
+            document.getElementById("to_date").value = "";
+          }
+          document.getElementById("modal").style.display = "flex";
+        }
+        function closeModal(){ document.getElementById("modal").style.display = "none"; }
+      </script>
+    </body>
+    </html>
+    """
 
-        <button onclick="closeModal()" class="modal-close-btn">Close</button>
-    </div>
-</div>
-
-</body>
-</html>
-"""
     return render_template_string(
         html,
         weeks=weeks,
@@ -560,13 +434,10 @@ def add():
     for i in range(days):
         d = start + timedelta(days=i)
         is_half = (half_flag and i == 0)
-        leave = Leave(name=name, date=d, note=note, half_day=is_half)
-        db.session.add(leave)
-
+        db.session.add(Leave(name=name, date=d, note=note, half_day=is_half))
         # ensure employee color exists
         if not EmployeeColor.query.filter_by(name=name).first():
             db.session.add(EmployeeColor(name=name, color=generate_color()))
-
     db.session.commit()
     return redirect("/dashboard")
 
@@ -585,13 +456,11 @@ def logout():
     return redirect("/")
 
 
-# -------------------- Startup: create tables & import JSON --------------------
+# -------------------- Startup: create tables and migrate JSON if present --------------------
 with app.app_context():
     db.create_all()
     import_json_to_db()
 
-
-# -------------------- Run (local dev) --------------------
+# -------------------- Run (local) --------------------
 if __name__ == "__main__":
-    # local development
     app.run(debug=True, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
