@@ -15,12 +15,19 @@ app.secret_key = os.getenv("FLASK_SECRET", "secret123")  # change for production
 
 # Use DATABASE_URL from environment (Render provides this)
 DATABASE_URL = os.getenv("DATABASE_URL")
+
 if not DATABASE_URL:
-    # fallback to sqlite for local dev convenience
     DATABASE_URL = "sqlite:///local_db.sqlite3"
+
+# Force SQLAlchemy to use psycopg3 instead of psycopg2
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace(
+        "postgresql://", "postgresql+psycopg://", 1
+    )
 
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
 
 db = SQLAlchemy(app)
 
